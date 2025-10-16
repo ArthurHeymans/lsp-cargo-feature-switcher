@@ -12,7 +12,7 @@ An Emacs package for interactively toggling Cargo features in Rust projects via 
 
 ** Dependencies
 
-Requires [[https://github.com/ArthurHeymans/emacs-toml][emacs-toml]], which supports TOML features that [[https://github.com/gongo/emacs-toml][gongo/emacs-toml]] does not.
+Requires my fork [[https://github.com/ArthurHeymans/emacs-toml][emacs-toml]], which supports TOML features that [[https://github.com/gongo/emacs-toml][gongo/emacs-toml]] does not.
 
 ** Usage
 
