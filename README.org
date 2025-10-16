@@ -2,6 +2,8 @@
 
 An Emacs package for interactively toggling Cargo features in Rust projects via LSP configuration.
 
+[[https://private-user-images.githubusercontent.com/15137817/502115586-cebe128b-8442-48d0-a9ea-8e36294c30eb.webm][demo]]
+
 ** Features
 
 - Find and parse ~Cargo.toml~ files
