@@ -134,8 +134,7 @@ Returns (features . no-default-features)."
       (prin1 new-config (current-buffer))
       (insert "\n"))))
 
-
-
+;;;###autoload
 (defun cargo-features-toggle-menu ()
   "Interactive menu to toggle Cargo features."
   (interactive)
