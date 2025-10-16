@@ -23,6 +23,7 @@
 ;;; Code:
 
 (require 'toml)
+(require 'files-x)
 
 (defun cargo-features-find-closest-toml (&optional dir)
   "Find the closest Cargo.toml file starting from DIR or current directory."
@@ -96,24 +97,23 @@ Returns a list of (feature-name type dependency-features always-enabled-crates).
   "Get current LSP rust features and no-default-features setting from DIR-LOCALS-FILE.
 Returns (features . no-default-features)."
   (when (and dir-locals-file (file-exists-p dir-locals-file))
-    (with-temp-buffer
-      (insert-file-contents dir-locals-file)
-      (goto-char (point-min))
-      (condition-case nil
-          (let* ((content (read (buffer-string)))
-                 (rustic-config (assoc 'rustic-mode content))
-                 (lsp-features-config (when rustic-config 
-                                        (assoc 'lsp-rust-features (cdr rustic-config))))
-                 (lsp-no-default-config (when rustic-config
-                                          (assoc 'lsp-rust-no-default-features (cdr rustic-config))))
-                 (features (when lsp-features-config (cdr lsp-features-config)))
-                 (no-default (when lsp-no-default-config (cdr lsp-no-default-config))))
-            (cons (when features
-                    (if (vectorp features)
-                        (append features '())
-                      features))
-                  no-default))
-        (error nil)))))
+    (condition-case nil
+        (let* ((dir (file-name-directory dir-locals-file))
+               (class (dir-locals-read-from-dir dir))
+               (variables (when class (dir-locals-get-class-variables class)))
+               (rustic-config (assoc 'rustic-mode variables))
+               (lsp-features-config (when rustic-config 
+                                      (assoc 'lsp-rust-features (cdr rustic-config))))
+               (lsp-no-default-config (when rustic-config
+                                        (assoc 'lsp-rust-no-default-features (cdr rustic-config))))
+               (features (when lsp-features-config (cdr lsp-features-config)))
+               (no-default (when lsp-no-default-config (cdr lsp-no-default-config))))
+          (cons (when features
+                  (if (vectorp features)
+                      (append features '())
+                    features))
+                no-default))
+      (error nil))))
 
 (defun cargo-features-get-current (&optional dir)
   "Get current LSP rust features and no-default-features from .dir-locals.el in DIR or current directory.
@@ -127,12 +127,24 @@ Returns (features . no-default-features)."
   "Update .dir-locals.el with FEATURES list and NO-DEFAULT-FEATURES in DIR or current directory."
   (let* ((cargo-dir (or dir (cargo-features-find-closest-toml)))
          (dir-locals-file (expand-file-name ".dir-locals.el" cargo-dir))
-         (settings `((lsp-rust-features . ,(vconcat features))
-                     (lsp-rust-no-default-features . ,no-default-features)))
-         (new-config `((rustic-mode . ,settings))))
-    (with-temp-file dir-locals-file
-      (prin1 new-config (current-buffer))
-      (insert "\n"))))
+         (default-directory cargo-dir))
+    (save-window-excursion
+      (modify-dir-local-variable 'rustic-mode 'lsp-rust-features (vconcat features) 'add-or-replace dir-locals-file)
+      (modify-dir-local-variable 'rustic-mode 'lsp-rust-no-default-features no-default-features 'add-or-replace dir-locals-file)
+      (save-buffer))
+    (let ((dir-locals-buffer (find-buffer-visiting dir-locals-file)))
+      (when dir-locals-buffer
+        (with-current-buffer dir-locals-buffer
+          (revert-buffer t t t))))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'rustic-mode)
+                   (string-prefix-p cargo-dir default-directory))
+          (kill-local-variable 'lsp-rust-features)
+          (kill-local-variable 'lsp-rust-no-default-features)
+          (hack-local-variables)
+          (when (fboundp 'lsp-workspace-restart)
+            (call-interactively 'lsp-workspace-restart)))))))
 
 ;;;###autoload
 (defun cargo-features-toggle-menu ()
