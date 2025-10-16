@@ -208,5 +208,5 @@ Returns (features . no-default-features)."
                 (message "Updated LSP rust features: %s" 
                          (mapconcat 'identity new-features " "))))))))))
 
-(provide 'cargo-features)
+(provide 'lsp-cargo-feature-switcher)
 ;;; cargo-features.el ends here
