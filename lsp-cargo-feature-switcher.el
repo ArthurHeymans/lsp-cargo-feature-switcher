@@ -7,6 +7,7 @@
 ;; Keywords: rust, cargo, lsp
 ;; Package: lsp-cargo-feature-switcher
 ;; Version: 0.1.0
+;; Package-Requires: ((toml "0.0.1"))
 
 ;; SPDX-License-Identifier: MIT
 
