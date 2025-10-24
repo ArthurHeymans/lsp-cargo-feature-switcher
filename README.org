@@ -11,6 +11,7 @@ An Emacs package for interactively toggling Cargo features in Rust projects via 
 - Automatically updates ~.dir-locals.el~ with LSP configuration
 - Shows enabled features and their dependencies
 - Supports toggling ~no-default-features~
+- Supports both ~eglot~ and ~lsp-mode~
 
 ** Dependencies
 
@@ -19,3 +20,31 @@ Requires my fork [[https://github.com/ArthurHeymans/emacs-toml][emacs-toml]], wh
 ** Usage
 
 Run ~M-x cargo-features-toggle-menu~ to open the interactive feature selection menu.
+
+** Configuration
+
+By default, the package uses ~eglot~ mode. To switch to ~lsp-mode~, set:
+
+#+begin_src emacs-lisp
+(setq cargo-features-lsp-mode 'lsp-mode)
+#+end_src
+
+*** Eglot Mode (default)
+
+When using eglot, the ~.dir-locals.el~ file is created at the project root (directory containing ~.git~) with configuration in the format:
+
+#+begin_src emacs-lisp
+((rustic-mode . ((eglot-workspace-configuration
+                  . (:rust-analyzer
+                     (:cargo (:features ["feature1" "feature2"]
+                              :noDefaultFeatures t)))))))
+#+end_src
+
+*** LSP Mode
+
+When using lsp-mode, the ~.dir-locals.el~ file is created at the Cargo.toml directory with configuration in the format:
+
+#+begin_src emacs-lisp
+((rustic-mode . ((lsp-rust-features . ["feature1" "feature2"])
+                 (lsp-rust-no-default-features . t))))
+#+end_src
