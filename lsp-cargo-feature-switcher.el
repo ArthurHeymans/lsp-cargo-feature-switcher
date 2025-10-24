@@ -40,60 +40,80 @@ Can be either 'lsp-mode or 'eglot."
 
 (defun cargo-features-parse-available (cargo-toml-path)
   "Parse available features from Cargo.toml at CARGO-TOML-PATH.
-Returns a list of (feature-name type dependency-features always-enabled-crates)."
+Returns a list of (feature-name . (same-crate-features dep-features))."
   (when (and cargo-toml-path (file-exists-p cargo-toml-path))
     (let* ((parsed-toml (toml:read-from-file cargo-toml-path))
            (features-section (assoc "features" parsed-toml))
-           (dependencies (assoc "dependencies" parsed-toml))
-           (dev-dependencies (assoc "dev-dependencies" parsed-toml))
-           (build-dependencies (assoc "build-dependencies" parsed-toml))
-           (all-features '())
-           (default-enabled-crates '()))
+           (all-features '()))
       
-      ;; First pass: find crates enabled by "default" feature
-      (when features-section
-        (let ((default-feature (assoc "default" (cdr features-section))))
-          (when default-feature
-            (let ((default-def (cdr default-feature)))
-              (cond
-               ((null default-def) nil)
-               ((and (consp default-def) (stringp (car default-def)))
-                (dolist (item default-def)
-                  (when (and (stringp item) (not (string-match-p "/" item)))
-                    (push item default-enabled-crates))))
-               ((vectorp default-def)
-                (dotimes (i (length default-def))
-                  (let ((item (aref default-def i)))
-                    (when (and (stringp item) (not (string-match-p "/" item)))
-                      (push item default-enabled-crates)))))
-               ((and (stringp default-def) (not (string-match-p "/" default-def)))
-                (push default-def default-enabled-crates)))))))
-      
-      ;; Second pass: add crate features with dependency feature analysis
       (when features-section
         (dolist (feature (cdr features-section))
           (when (consp feature)
             (let* ((feature-name (car feature))
                    (feature-def (cdr feature))
+                   (same-crate-features '())
                    (dep-features '())
-                   (always-enabled (member feature-name default-enabled-crates)))
+                   (all-deps '()))
               (cond
                ((null feature-def)
                 nil)
                ((and (consp feature-def) (stringp (car feature-def)))
-                (dolist (item feature-def)
-                  (when (stringp item)
-                    (push item dep-features))))
+                (setq all-deps feature-def))
                ((vectorp feature-def)
                 (dotimes (i (length feature-def))
                   (let ((item (aref feature-def i)))
                     (when (stringp item)
-                      (push item dep-features)))))
+                      (push item all-deps))))
+                (setq all-deps (nreverse all-deps)))
                ((stringp feature-def)
-                (push feature-def dep-features)))
-              (push (cons feature-name (list "crate" (nreverse dep-features) always-enabled)) all-features)))))
+                (setq all-deps (list feature-def))))
+              
+              (dolist (dep all-deps)
+                (when (stringp dep)
+                  (if (string-match-p "/" dep)
+                      (push dep dep-features)
+                    (push dep same-crate-features))))
+              
+              (push (cons feature-name (list (nreverse same-crate-features) (nreverse dep-features))) all-features)))))
       
       (nreverse all-features))))
+
+(defun cargo-features-compute-transitive (selected-features no-default-features available-features)
+  "Compute all transitively enabled features.
+SELECTED-FEATURES is a list of explicitly selected feature names.
+NO-DEFAULT-FEATURES is a boolean.
+AVAILABLE-FEATURES is the parsed feature list from cargo-features-parse-available.
+Returns an alist mapping feature-name to either nil (directly selected) or the name of the feature that enabled it."
+  (let ((enabled-by (make-hash-table :test 'equal))
+        (to-process '()))
+    
+    (if no-default-features
+        (dolist (feat selected-features)
+          (puthash feat nil enabled-by)
+          (push feat to-process))
+      (puthash "default" nil enabled-by)
+      (push "default" to-process)
+      (dolist (feat selected-features)
+        (unless (string= feat "default")
+          (puthash feat nil enabled-by)
+          (push feat to-process))))
+    
+    (while to-process
+      (let* ((current (pop to-process))
+             (feature-entry (assoc current available-features)))
+        (when feature-entry
+          (let* ((feature-data (cdr feature-entry))
+                 (same-crate-features (car feature-data)))
+            (dolist (dep same-crate-features)
+              (unless (gethash dep enabled-by)
+                (puthash dep current enabled-by)
+                (push dep to-process)))))))
+    
+    (let ((result '()))
+      (maphash (lambda (feat enabled-by-feat)
+                 (push (cons feat enabled-by-feat) result))
+               enabled-by)
+      result)))
 
 (defun cargo-features-find-project-root (&optional dir)
   "Find project root directory starting from DIR or current directory.
@@ -229,25 +249,28 @@ Uses either lsp-mode or eglot configuration based on `cargo-features-lsp-mode'."
            (current-state (cargo-features-get-current))
            (current-features (or (car current-state) '()))
            (no-default-features (cdr current-state))
+           (transitive-map (cargo-features-compute-transitive current-features no-default-features available-features))
            (feature-names (mapcar (lambda (f) (car f)) available-features))
-           (prompt "Toggle Cargo features (marked with * are enabled):")
+           (prompt "Toggle Cargo features:")
            (candidates (mapcar (lambda (feature)
                                  (let* ((name (car feature))
-                                        (feature-info (cdr feature))
-                                        (type (car feature-info))
-                                        (dep-features (cadr feature-info))
-                                        (always-enabled (caddr feature-info))
+                                        (feature-data (cdr feature))
+                                        (same-crate-features (car feature-data))
+                                        (dep-features (cadr feature-data))
+                                        (transitive-entry (assoc name transitive-map))
+                                        (enabled-by (when transitive-entry (cdr transitive-entry)))
                                         (is-default (string= name "default"))
-                                        (default-enabled (and is-default (not no-default-features)))
                                         (enabled-str (cond
-                                                      ((and always-enabled (not no-default-features)) "[DEFAULT ENABLED]")
-                                                      (default-enabled "[ENABLED]")
-                                                      ((member name current-features) "[ENABLED]")
+                                                      ((and transitive-entry (null enabled-by))
+                                                       (if is-default "[DEFAULT]" "[SELECTED]"))
+                                                      (transitive-entry
+                                                       (format "[ENABLED BY: %s]" enabled-by))
                                                       (t "")))
-                                        (dep-str (if dep-features 
-                                                     (format "dep: [ %s ]" (mapconcat 'identity dep-features " "))
+                                        (all-deps (append same-crate-features dep-features))
+                                        (dep-str (if all-deps
+                                                     (format "dep: [ %s ]" (mapconcat 'identity all-deps " "))
                                                    "")))
-                                   (format "%-30s %-18s %s" name enabled-str dep-str)))
+                                   (format "%-30s %-25s %s" name enabled-str dep-str)))
                                available-features))
            (selection (completing-read prompt candidates nil t)))
       
