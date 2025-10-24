@@ -54,19 +54,13 @@ Returns a list of (feature-name . (same-crate-features dep-features))."
                    (same-crate-features '())
                    (dep-features '())
                    (all-deps '()))
-              (cond
-               ((null feature-def)
-                nil)
-               ((and (consp feature-def) (stringp (car feature-def)))
-                (setq all-deps feature-def))
-               ((vectorp feature-def)
-                (dotimes (i (length feature-def))
-                  (let ((item (aref feature-def i)))
-                    (when (stringp item)
-                      (push item all-deps))))
-                (setq all-deps (nreverse all-deps)))
-               ((stringp feature-def)
-                (setq all-deps (list feature-def))))
+              (setq all-deps
+                    (cond
+                     ((null feature-def) nil)
+                     ((vectorp feature-def) (append feature-def nil))
+                     ((listp feature-def) feature-def)
+                     ((stringp feature-def) (list feature-def))
+                     (t nil)))
               
               (dolist (dep all-deps)
                 (when (stringp dep)
@@ -87,16 +81,12 @@ Returns an alist mapping feature-name to either nil (directly selected) or the n
   (let ((enabled-by (make-hash-table :test 'equal))
         (to-process '()))
     
-    (if no-default-features
-        (dolist (feat selected-features)
-          (puthash feat nil enabled-by)
-          (push feat to-process))
-      (puthash "default" nil enabled-by)
-      (push "default" to-process)
-      (dolist (feat selected-features)
-        (unless (string= feat "default")
-          (puthash feat nil enabled-by)
-          (push feat to-process))))
+    (let ((initial-features (if no-default-features
+                                selected-features
+                              (delete-dups (cons "default" selected-features)))))
+      (dolist (feat initial-features)
+        (puthash feat nil enabled-by)
+        (push feat to-process)))
     
     (while to-process
       (let* ((current (pop to-process))
@@ -127,9 +117,27 @@ For lsp-mode, uses Cargo.toml directory."
 
 (defun cargo-features-find-dir-locals (&optional dir)
   "Find .dir-locals.el file in DIR or closest project root."
-  (let* ((project-root (cargo-features-find-project-root dir))
-         (dir-locals-file (when project-root (expand-file-name ".dir-locals.el" project-root))))
-    dir-locals-file))
+  (when-let ((project-root (cargo-features-find-project-root dir)))
+    (expand-file-name ".dir-locals.el" project-root)))
+
+(defun cargo-features--revert-dir-locals-buffer (dir-locals-file)
+  "Revert the buffer visiting DIR-LOCALS-FILE if it exists."
+  (when-let ((buf (find-buffer-visiting dir-locals-file)))
+    (with-current-buffer buf
+      (revert-buffer t t t))))
+
+(defun cargo-features--refresh-rustic-buffers (project-root local-vars restart-fn)
+  "Refresh rustic-mode buffers in PROJECT-ROOT.
+LOCAL-VARS is a list of variables to kill, RESTART-FN is the LSP restart function."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'rustic-mode)
+                 (string-prefix-p project-root default-directory))
+        (dolist (var local-vars)
+          (kill-local-variable var))
+        (hack-local-variables)
+        (when restart-fn
+          (funcall restart-fn))))))
 
 (defun cargo-features-get-current-from-file (dir-locals-file)
   "Get current LSP/eglot rust features and no-default-features setting from DIR-LOCALS-FILE.
@@ -147,23 +155,20 @@ Returns (features . no-default-features)."
                (eglot-config (when rustic-config
                                (assoc 'eglot-workspace-configuration (cdr rustic-config))))
                (eglot-data (when eglot-config
-                            (let* ((config-plist (cdr eglot-config))
-                                   (rust-analyzer (plist-get config-plist :rust-analyzer))
-                                   (cargo (plist-get rust-analyzer :cargo)))
-                              (cons (plist-get cargo :features)
-                                    (plist-get cargo :noDefaultFeatures)))))
-               (features (or (when lsp-features-config (cdr lsp-features-config))
-                            (when eglot-data
-                              (let ((cargo-features (car eglot-data)))
-                                (when (vectorp cargo-features)
-                                  (append cargo-features '()))))))
-               (no-default (or (when lsp-no-default-config (cdr lsp-no-default-config))
-                              (when eglot-data (cdr eglot-data)))))
-          (cons (when features
-                  (if (vectorp features)
-                      (append features '())
-                    features))
-                no-default))
+                             (let* ((config-plist (cdr eglot-config))
+                                    (rust-analyzer (plist-get config-plist :rust-analyzer))
+                                    (cargo (plist-get rust-analyzer :cargo)))
+                               (cons (plist-get cargo :features)
+                                     (plist-get cargo :noDefaultFeatures)))))
+                (features (cond
+                           (lsp-features-config (cdr lsp-features-config))
+                           (eglot-data 
+                            (let ((f (car eglot-data)))
+                              (and (vectorp f) (append f nil))))))
+                (no-default (or (and lsp-no-default-config (cdr lsp-no-default-config))
+                                (and eglot-data (cdr eglot-data)))))
+           (cons (and features (if (vectorp features) (append features nil) features))
+                 no-default))
       (error nil))))
 
 (defun cargo-features-get-current (&optional dir)
@@ -183,19 +188,12 @@ FEATURES is the list of features, NO-DEFAULT-FEATURES is boolean, PROJECT-ROOT i
       (modify-dir-local-variable 'rustic-mode 'lsp-rust-features (vconcat features) 'add-or-replace dir-locals-file)
       (modify-dir-local-variable 'rustic-mode 'lsp-rust-no-default-features no-default-features 'add-or-replace dir-locals-file)
       (save-buffer))
-    (let ((dir-locals-buffer (find-buffer-visiting dir-locals-file)))
-      (when dir-locals-buffer
-        (with-current-buffer dir-locals-buffer
-          (revert-buffer t t t))))
-    (dolist (buffer (buffer-list))
-      (with-current-buffer buffer
-        (when (and (derived-mode-p 'rustic-mode)
-                   (string-prefix-p project-root default-directory))
-          (kill-local-variable 'lsp-rust-features)
-          (kill-local-variable 'lsp-rust-no-default-features)
-          (hack-local-variables)
-          (when (fboundp 'lsp-workspace-restart)
-            (call-interactively 'lsp-workspace-restart)))))))
+    (cargo-features--revert-dir-locals-buffer dir-locals-file)
+    (cargo-features--refresh-rustic-buffers 
+     project-root
+     '(lsp-rust-features lsp-rust-no-default-features)
+     (when (fboundp 'lsp-workspace-restart)
+       (lambda () (call-interactively 'lsp-workspace-restart))))))
 
 (defun cargo-features-update-dir-locals-eglot (features no-default-features project-root)
   "Update .dir-locals.el with eglot configuration.
@@ -211,18 +209,12 @@ FEATURES is the list of features, NO-DEFAULT-FEATURES is boolean, PROJECT-ROOT i
     (save-window-excursion
       (modify-dir-local-variable 'rustic-mode 'eglot-workspace-configuration eglot-config 'add-or-replace dir-locals-file)
       (save-buffer))
-    (let ((dir-locals-buffer (find-buffer-visiting dir-locals-file)))
-      (when dir-locals-buffer
-        (with-current-buffer dir-locals-buffer
-          (revert-buffer t t t))))
-    (dolist (buffer (buffer-list))
-      (with-current-buffer buffer
-        (when (and (derived-mode-p 'rustic-mode)
-                   (string-prefix-p project-root default-directory))
-          (kill-local-variable 'eglot-workspace-configuration)
-          (hack-local-variables)
-          (when (and (fboundp 'eglot-managed-p) (eglot-managed-p))
-            (call-interactively 'eglot-reconnect)))))))
+    (cargo-features--revert-dir-locals-buffer dir-locals-file)
+    (cargo-features--refresh-rustic-buffers
+     project-root
+     '(eglot-workspace-configuration)
+     (when (and (fboundp 'eglot-managed-p) (eglot-managed-p))
+       (lambda () (call-interactively 'eglot-reconnect))))))
 
 (defun cargo-features-update-dir-locals (features no-default-features &optional dir)
   "Update .dir-locals.el with FEATURES list and NO-DEFAULT-FEATURES in DIR or current directory.
@@ -236,21 +228,16 @@ Uses either lsp-mode or eglot configuration based on `cargo-features-lsp-mode'."
 (defun cargo-features-toggle-menu ()
   "Interactive menu to toggle Cargo features."
   (interactive)
-  (let* ((cargo-dir (cargo-features-find-closest-toml))
-         (cargo-toml (when cargo-dir (expand-file-name "Cargo.toml" cargo-dir))))
-    
-    (unless cargo-toml
-      (user-error "No Cargo.toml found in current or parent directories"))
-    
-    (unless (file-exists-p cargo-toml)
-      (user-error "Cargo.toml file does not exist: %s" cargo-toml))
-    
-    (let* ((available-features (cargo-features-parse-available cargo-toml))
+  (if-let* ((cargo-dir (cargo-features-find-closest-toml))
+            (cargo-toml (expand-file-name "Cargo.toml" cargo-dir)))
+      (progn
+        (unless (file-exists-p cargo-toml)
+          (user-error "Cargo.toml file does not exist: %s" cargo-toml))
+        (let* ((available-features (cargo-features-parse-available cargo-toml))
            (current-state (cargo-features-get-current))
            (current-features (or (car current-state) '()))
            (no-default-features (cdr current-state))
            (transitive-map (cargo-features-compute-transitive current-features no-default-features available-features))
-           (feature-names (mapcar (lambda (f) (car f)) available-features))
            (prompt "Toggle Cargo features:")
            (candidates (mapcar (lambda (feature)
                                  (let* ((name (car feature))
@@ -260,22 +247,21 @@ Uses either lsp-mode or eglot configuration based on `cargo-features-lsp-mode'."
                                         (transitive-entry (assoc name transitive-map))
                                         (enabled-by (when transitive-entry (cdr transitive-entry)))
                                         (is-default (string= name "default"))
-                                        (enabled-str (cond
-                                                      ((and transitive-entry (null enabled-by))
-                                                       (if is-default "[DEFAULT]" "[SELECTED]"))
-                                                      (transitive-entry
-                                                       (format "[ENABLED BY: %s]" enabled-by))
-                                                      (t "")))
+                                        (enabled-str (if transitive-entry
+                                                         (if enabled-by
+                                                             (format "[ENABLED BY: %s]" enabled-by)
+                                                           (if is-default "[DEFAULT]" "[SELECTED]"))
+                                                       ""))
                                         (all-deps (append same-crate-features dep-features))
                                         (dep-str (if all-deps
-                                                     (format "dep: [ %s ]" (mapconcat 'identity all-deps " "))
+                                                     (format "dep: [ %s ]" (string-join all-deps " "))
                                                    "")))
                                    (format "%-30s %-25s %s" name enabled-str dep-str)))
                                available-features))
            (selection (completing-read prompt candidates nil t)))
       
       (when selection
-        (let* ((selected-name (car (split-string selection " " t)))
+        (let* ((selected-name (car (split-string selection)))
                (selected-feature (assoc selected-name available-features))
                (is-default (string= selected-name "default")))
           (when selected-feature
@@ -289,7 +275,8 @@ Uses either lsp-mode or eglot configuration based on `cargo-features-lsp-mode'."
                        (sort (append current-features (list selected-name)) 'string<))))
                 (cargo-features-update-dir-locals new-features no-default-features)
                 (message "Updated LSP rust features: %s" 
-                         (mapconcat 'identity new-features " "))))))))))
+                         (string-join new-features " ")))))))))
+    (user-error "No Cargo.toml found in current or parent directories")))
 
 (provide 'lsp-cargo-feature-switcher)
 ;;; cargo-features.el ends here
