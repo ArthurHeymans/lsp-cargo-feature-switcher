@@ -15,7 +15,7 @@ An Emacs package for interactively toggling Cargo features in Rust projects via 
 
 ** Dependencies
 
-Requires my fork [[https://github.com/ArthurHeymans/emacs-toml][emacs-toml]], which supports TOML features that [[https://github.com/gongo/emacs-toml][gongo/emacs-toml]] does not.
+Requires [[https://github.com/johannes-mueller/tomlparse.el][tomlparse.el]], a tree-sitter based TOML parser that requires Emacs 29.1 or later.
 
 ** Usage
 

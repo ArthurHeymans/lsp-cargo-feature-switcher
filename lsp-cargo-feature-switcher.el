@@ -7,7 +7,7 @@
 ;; Keywords: rust, cargo, lsp
 ;; Package: lsp-cargo-feature-switcher
 ;; Version: 0.1.0
-;; Package-Requires: ((toml "0.0.1"))
+;; Package-Requires: ((emacs "29.1") (tomlparse "1.0.0"))
 
 ;; SPDX-License-Identifier: MIT
 
@@ -19,11 +19,9 @@
 ;; Usage:
 ;;   M-x cargo-features-toggle-menu
 ;;
-;; Requires: https://github.com/ArthurHeymans/emacs-toml
-
 ;;; Code:
 
-(require 'toml)
+(require 'tomlparse)
 (require 'files-x)
 
 (defcustom cargo-features-lsp-mode 'eglot
@@ -42,14 +40,14 @@ Can be either 'lsp-mode or 'eglot."
   "Parse available features from Cargo.toml at CARGO-TOML-PATH.
 Returns a list of (feature-name . (same-crate-features dep-features))."
   (when (and cargo-toml-path (file-exists-p cargo-toml-path))
-    (let* ((parsed-toml (toml:read-from-file cargo-toml-path))
-           (features-section (assoc "features" parsed-toml))
+    (let* ((parsed-toml (tomlparse-file cargo-toml-path :object-type 'alist))
+           (features-section (assoc 'features parsed-toml))
            (all-features '()))
       
       (when features-section
         (dolist (feature (cdr features-section))
           (when (consp feature)
-            (let* ((feature-name (car feature))
+            (let* ((feature-name (symbol-name (car feature)))
                    (feature-def (cdr feature))
                    (same-crate-features '())
                    (dep-features '())
